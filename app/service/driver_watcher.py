@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from google.oauth2 import service_account
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class DriveWatcher:
-    """Enhanced Google Drive folder monitor with additional testing capabilities."""
+    """Monitor de carpeta en Google Drive con capacidades de notificación push."""
 
     def __init__(self, folder_id: str, credentials_path: str):
         self.folder_id = folder_id
@@ -24,24 +25,24 @@ class DriveWatcher:
         self._verify_connection()
 
     def _verify_connection(self) -> bool:
-        """Verify connection to Google Drive."""
+        """Verifica la conexión a Google Drive."""
         try:
-            # Try to get folder metadata as connection test
+            # Se obtiene la metadata de la carpeta para probar la conexión.
             self.drive_service.files().get(fileId=self.folder_id).execute()
             self._is_connected = True
-            logger.info("Successfully connected to Google Drive")
+            logger.info("Conexión exitosa a Google Drive")
             return True
         except HttpError as e:
-            logger.error(f"Failed to connect to Google Drive: {str(e)}")
+            logger.error(f"Fallo al conectar con Google Drive: {str(e)}")
             self._is_connected = False
             return False
 
     def is_connected(self) -> bool:
-        """Check if connected to Google Drive."""
+        """Devuelve el estado de conexión a Google Drive."""
         return self._is_connected
 
     def get_folder_info(self) -> Dict[str, Any]:
-        """Get information about the monitored folder."""
+        """Obtiene información de la carpeta monitorizada."""
         try:
             folder = self.drive_service.files().get(
                 fileId=self.folder_id,
@@ -49,11 +50,11 @@ class DriveWatcher:
             ).execute()
             return folder
         except HttpError as e:
-            logger.error(f"Error getting folder info: {str(e)}")
+            logger.error(f"Error obteniendo la información de la carpeta: {str(e)}")
             raise
 
     def list_files(self, page_size: int = 100) -> List[Dict[str, Any]]:
-        """List all files in the monitored folder."""
+        """Lista todos los archivos de la carpeta monitorizada."""
         try:
             results = self.drive_service.files().list(
                 q=f"'{self.folder_id}' in parents and trashed = false",
@@ -64,14 +65,14 @@ class DriveWatcher:
 
             files = results.get('files', [])
             self.last_check_time = datetime.now(timezone.utc)
-            logger.debug(f"Found {len(files)} files in folder")
+            logger.debug(f"Se encontraron {len(files)} archivos en la carpeta")
             return files
         except HttpError as e:
-            logger.error(f"Error listing files: {str(e)}")
+            logger.error(f"Error al listar archivos: {str(e)}")
             raise
 
     def check_for_new_files(self) -> List[Dict[str, Any]]:
-        """Check for new files that haven't been processed."""
+        """Detecta archivos nuevos que no han sido procesados aún."""
         files = self.list_files()
         new_files = []
 
@@ -81,12 +82,12 @@ class DriveWatcher:
                 file['detected_at'] = datetime.now(timezone.utc).isoformat()
                 new_files.append(file)
                 self.processed_files.add(file_id)
-                logger.info(f"New file detected: {file['name']} (ID: {file_id})")
+                logger.info(f"Archivo nuevo detectado: {file['name']} (ID: {file_id})")
 
         return new_files
 
     def get_file_details(self, file_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed information about a specific file."""
+        """Obtiene detalles de un archivo específico."""
         try:
             return self.drive_service.files().get(
                 fileId=file_id,
@@ -94,13 +95,13 @@ class DriveWatcher:
             ).execute()
         except HttpError as e:
             if e.resp.status == 404:
-                logger.warning(f"File not found: {file_id}")
+                logger.warning(f"Archivo no encontrado: {file_id}")
                 return None
-            logger.error(f"Error getting file details: {str(e)}")
+            logger.error(f"Error obteniendo detalles del archivo: {str(e)}")
             raise
 
     def get_monitoring_status(self) -> Dict[str, Any]:
-        """Get current monitoring status."""
+        """Devuelve el estado actual del monitoreo."""
         return {
             "is_running": self._is_connected,
             "folder_id": self.folder_id,
@@ -109,6 +110,70 @@ class DriveWatcher:
         }
 
     def reset_processed_files(self) -> None:
-        """Clear the set of processed files."""
+        """Limpia el registro de archivos procesados."""
         self.processed_files.clear()
-        logger.info("Processed files cache cleared")
+        logger.info("Cache de archivos procesados limpiada")
+
+    def register_watch_channel(self, notification_url: str) -> Dict[str, Any]:
+        """
+        Registra un canal de notificaciones push en el feed de cambios de Google Drive.
+        Es necesario disponer de un endpoint HTTPS (notification_url) accesible desde internet.
+        """
+        channel_id = str(uuid.uuid4())
+        body = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": notification_url
+        }
+        try:
+            # Se obtiene el token inicial para cambios
+            start_page_token_response = self.drive_service.changes().getStartPageToken().execute()
+            start_page_token = start_page_token_response.get("startPageToken")
+            # Se registra el canal para recibir notificaciones
+            channel = self.drive_service.changes().watch(
+                pageToken=start_page_token,
+                body=body
+            ).execute()
+            logger.info(f"Canal de notificaciones registrado con ID {channel_id}: {channel}")
+            return channel
+        except HttpError as e:
+            logger.error(f"Error al registrar el canal de notificaciones: {str(e)}")
+            raise
+
+    def get_incremental_changes(self, saved_page_token: Optional[str] = None) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Obtiene los cambios incrementales desde el token guardado.
+
+        Si no se proporciona 'saved_page_token', se obtiene un token inicial.
+        Retorna una tupla con la lista de cambios y el nuevo token.
+        """
+        try:
+            if not saved_page_token:
+                token_response = self.drive_service.changes().getStartPageToken().execute()
+                saved_page_token = token_response.get("startPageToken")
+                logger.info(f"Token inicial obtenido: {saved_page_token}")
+
+            changes: List[Dict[str, Any]] = []
+            page_token = saved_page_token
+            new_token = saved_page_token
+
+            while True:
+                response = self.drive_service.changes().list(
+                    pageToken=page_token,
+                    spaces="drive",
+                    fields="nextPageToken, newStartPageToken, changes(fileId, file(name, mimeType, modifiedTime, webViewLink))"
+                ).execute()
+
+                changes.extend(response.get("changes", []))
+                if "newStartPageToken" in response:
+                    new_token = response.get("newStartPageToken")
+                if "nextPageToken" not in response:
+                    break
+                page_token = response.get("nextPageToken")
+
+            logger.info(f"{len(changes)} cambios obtenidos. Nuevo token: {new_token}")
+            return changes, new_token
+
+        except HttpError as e:
+            logger.error(f"Error al obtener cambios incrementales: {str(e)}")
+            raise
