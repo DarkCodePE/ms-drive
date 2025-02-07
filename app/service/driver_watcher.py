@@ -1,6 +1,6 @@
 import logging
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
