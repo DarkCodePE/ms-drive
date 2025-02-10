@@ -35,3 +35,5 @@ PyJWT
 aiokafka
 google-auth
 google-api-python-client
+python-dateutil
+asyncpg

@@ -28,3 +28,13 @@ class ServiceStatus(BaseModel):
     google_drive_connected: bool
     monitoring_active: bool
     folder_id: Optional[str] = None
+
+
+class DriveFileDB(BaseModel):
+    id: str
+    name: str
+    mimeType: str
+    modifiedTime: datetime
+    webViewLink: str
+    detected_at: Optional[datetime] = None
+    processed: bool = False

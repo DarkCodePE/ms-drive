@@ -10,29 +10,61 @@ logger = logging.getLogger(__name__)
 
 
 class DriveWatcher:
-    """Monitor de carpeta en Google Drive con capacidades de notificación push."""
+    """Monitor de carpeta en Google Drive con capacidades de notificación push e incremental changes."""
+
+    REQUIRED_SCOPES = [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.appdata",
+        "https://www.googleapis.com/auth/drive.photos.readonly",
+        "https://www.googleapis.com/auth/drive.metadata",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+        "https://www.googleapis.com/auth/drive",
+    ]
 
     def __init__(self, folder_id: str, credentials_path: str):
         self.folder_id = folder_id
+        # Carga las credenciales con los scopes requeridos
         self.credentials = service_account.Credentials.from_service_account_file(
             credentials_path,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            scopes=self.REQUIRED_SCOPES
         )
+        # Verifica que las credenciales tengan los scopes requeridos
+        self.verify_scopes()
+        # Construye el cliente de la API de Drive
         self.drive_service = build('drive', 'v3', credentials=self.credentials)
         self.processed_files = set()
         self.last_check_time = None
         self._is_connected = False
         self._verify_connection()
 
+    def verify_scopes(self) -> bool:
+        """Verifica que las credenciales tengan los scopes requeridos."""
+        if not self.credentials.scopes:
+            print("No se encontraron scopes en las credenciales.")
+            logger.warning("No se encontraron scopes en las credenciales.")
+            return False
+        missing = [scope for scope in self.REQUIRED_SCOPES if scope not in self.credentials.scopes]
+        if missing:
+            print(f"Faltan los siguientes scopes requeridos: {missing}")
+            logger.error(f"Faltan los siguientes scopes requeridos: {missing}")
+            return False
+        else:
+            print("Todos los scopes requeridos están presentes.")
+            logger.info("Todos los scopes requeridos están presentes.")
+            return True
+
     def _verify_connection(self) -> bool:
         """Verifica la conexión a Google Drive."""
         try:
-            # Se obtiene la metadata de la carpeta para probar la conexión.
             self.drive_service.files().get(fileId=self.folder_id).execute()
             self._is_connected = True
+            print("Conexión exitosa a Google Drive")
             logger.info("Conexión exitosa a Google Drive")
             return True
         except HttpError as e:
+            print(f"Fallo al conectar con Google Drive: {str(e)}")
             logger.error(f"Fallo al conectar con Google Drive: {str(e)}")
             self._is_connected = False
             return False
@@ -48,6 +80,7 @@ class DriveWatcher:
                 fileId=self.folder_id,
                 fields="id, name, mimeType, modifiedTime"
             ).execute()
+            logger.debug(f"Información de la carpeta: {folder}")
             return folder
         except HttpError as e:
             logger.error(f"Error obteniendo la información de la carpeta: {str(e)}")
@@ -62,7 +95,6 @@ class DriveWatcher:
                 orderBy="modifiedTime desc",
                 pageSize=page_size
             ).execute()
-
             files = results.get('files', [])
             self.last_check_time = datetime.now(timezone.utc)
             logger.debug(f"Se encontraron {len(files)} archivos en la carpeta")
@@ -73,9 +105,11 @@ class DriveWatcher:
 
     def check_for_new_files(self) -> List[Dict[str, Any]]:
         """Detecta archivos nuevos que no han sido procesados aún."""
+        print("--- check_for_new_files FUNCTION STARTED ---")  # <--- ADD THIS LINE
+        print(f"Current processed_files set: {self.processed_files}")  # <--- ADD THIS LINE
         files = self.list_files()
+        print(f"list_files() returned {len(files)} files.")  # <--- ADD THIS LINE
         new_files = []
-
         for file in files:
             file_id = file['id']
             if file_id not in self.processed_files:
@@ -83,7 +117,9 @@ class DriveWatcher:
                 new_files.append(file)
                 self.processed_files.add(file_id)
                 logger.info(f"Archivo nuevo detectado: {file['name']} (ID: {file_id})")
-
+        print(f"New files detected in this check: {len(new_files)}")  # <--- ADD THIS LINE
+        print(f"processed_files set after check: {self.processed_files}")  # <--- ADD THIS LINE
+        print("--- check_for_new_files FUNCTION COMPLETED ---")  # <--- ADD THIS LINE
         return new_files
 
     def get_file_details(self, file_id: str) -> Optional[Dict[str, Any]]:
@@ -119,31 +155,43 @@ class DriveWatcher:
         Registra un canal de notificaciones push en el feed de cambios de Google Drive.
         Es necesario disponer de un endpoint HTTPS (notification_url) accesible desde internet.
         """
+        if not notification_url:
+            logger.warning("No se proporcionó drive_notification_url. El canal de notificaciones no se registrará.")
+            logger.debug(f"notification_url: {notification_url}")
+            return {}
         channel_id = str(uuid.uuid4())
+        logger.info(f"channel_id: {channel_id}")
         body = {
             "id": channel_id,
             "type": "web_hook",
             "address": notification_url
         }
         try:
-            # Se obtiene el token inicial para cambios
             start_page_token_response = self.drive_service.changes().getStartPageToken().execute()
+            print(f"start_page_token_response: {start_page_token_response}")
             start_page_token = start_page_token_response.get("startPageToken")
-            # Se registra el canal para recibir notificaciones
+            print(f"start_page_token: {start_page_token}")
             channel = self.drive_service.changes().watch(
                 pageToken=start_page_token,
                 body=body
             ).execute()
+            print(f"""
+                    Canal de notificaciones registrado exitosamente:
+                    - Channel ID: {channel.get('id')}
+                    - Resource ID: {channel.get('resourceId')}
+                    - Expiration: {channel.get('expiration')}
+                    - Type: {channel.get('type')}
+                """)
             logger.info(f"Canal de notificaciones registrado con ID {channel_id}: {channel}")
             return channel
         except HttpError as e:
+            print(f"Error al registrar el canal de notificaciones: {str(e)}")
             logger.error(f"Error al registrar el canal de notificaciones: {str(e)}")
             raise
 
     def get_incremental_changes(self, saved_page_token: Optional[str] = None) -> Tuple[List[Dict[str, Any]], str]:
         """
         Obtiene los cambios incrementales desde el token guardado.
-
         Si no se proporciona 'saved_page_token', se obtiene un token inicial.
         Retorna una tupla con la lista de cambios y el nuevo token.
         """
@@ -156,7 +204,7 @@ class DriveWatcher:
             changes: List[Dict[str, Any]] = []
             page_token = saved_page_token
             new_token = saved_page_token
-
+            print(f"page_token: {page_token}")
             while True:
                 response = self.drive_service.changes().list(
                     pageToken=page_token,

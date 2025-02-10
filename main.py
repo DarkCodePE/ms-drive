@@ -9,9 +9,13 @@ from app.api.v1.endpoints import drive
 
 import logging
 
+from app.config.database import db_manager
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="Drive Monitor API", version="1.0.0")
 
 # CORS middleware
 app.add_middleware(
@@ -22,31 +26,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(
-    drive.router
-)
-
-# Inicializa la base de datos
-#init_db()
-
-
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "ok",
-        "version": "1.0.0",
-        "langsmith_enabled": True
-    }
+# Include routers
+app.include_router(drive.router)
 
 
 @app.on_event("startup")
 async def startup_event():
-    print("Starting up...")
+    """Initialize services on startup"""
+    logger.info("Initializing application...")
+    try:
+        # Initialize database
+        db_manager.init_db()
+        logger.info("Database initialization completed")
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        raise
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "database": "connected"
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # Elimina la coma y el texto adicional que tenías para evitar errores
-    uvicorn.run(app, host="0.0.0.0", port=9014, workers=2)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=9014,
+        workers=2
+    )
