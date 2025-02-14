@@ -27,11 +27,14 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
     Sincroniza una lista de archivos con la base de datos.
 
     Args:
-        db: Sesión de base de datos del DatabaseManager
+        db: Sesión de base de datos
         drive_files: Lista de archivos de Drive a sincronizar
 
     Returns:
         Lista de nuevos archivos insertados
+
+    Raises:
+        Exception: Si hay un error durante la sincronización
     """
     try:
         logger.info(f"Iniciando sincronización de {len(drive_files)} archivos")
@@ -39,7 +42,7 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
 
         for drive_file in drive_files:
             try:
-                # Prepara los datos del archivo
+                # 1. Preparar los datos del archivo
                 file_data = {
                     'id': safe_str(getattr(drive_file, 'id', '')),
                     'name': safe_str(getattr(drive_file, 'name', '')),
@@ -47,7 +50,7 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
                     'web_view_link': safe_str(getattr(drive_file, 'webViewLink', '')),
                 }
 
-                # Procesa la fecha de modificación
+                # 2. Procesar la fecha de modificación
                 try:
                     modified_time = parse_date(
                         drive_file.modifiedTime) if drive_file.modifiedTime else datetime.utcnow()
@@ -55,11 +58,11 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
                     modified_time = datetime.utcnow()
                     logger.warning(f"Usando fecha actual para {file_data['name']}")
 
-                # Busca el archivo en la BD
+                # 3. Buscar el archivo en la BD
                 existing = db.query(DriveFileModel).filter_by(file_id=file_data['id']).first()
 
                 if not existing:
-                    # Crea nuevo registro
+                    # 4a. Crear nuevo registro
                     new_file = DriveFileModel(
                         file_id=file_data['id'],
                         name=file_data['name'],
@@ -70,26 +73,33 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
                     )
                     db.add(new_file)
                     new_files.append(new_file)
-                    logger.info(f"Archivo nuevo insertado: {file_data['name']}")
+                    logger.info(f"Archivo nuevo preparado para inserción: {file_data['name']}")
                 else:
-                    # Actualiza si la fecha de modificación cambió
+                    # 4b. Actualizar si la fecha de modificación cambió
                     if existing.modified_time != modified_time:
                         existing.name = file_data['name']
                         existing.mime_type = file_data['mime_type']
                         existing.modified_time = modified_time
-                        existing.web_view_link = file_data['web_view_link'] if file_data[
-                                                                                   'web_view_link'] != 'None' else None
+                        existing.web_view_link = file_data['web_view_link'] if file_data['web_view_link'] != 'None' else None
                         db.add(existing)
-                        logger.info(f"Archivo actualizado: {file_data['name']}")
+                        logger.info(f"Archivo preparado para actualización: {file_data['name']}")
 
             except Exception as e:
                 logger.error(f"Error procesando archivo {safe_str(getattr(drive_file, 'name', 'Unknown'))}: {str(e)}")
                 continue
 
-        # El commit se realiza automáticamente al salir del context manager
-        logger.info(f"Sincronización completada. {len(new_files)} archivos nuevos insertados")
+        # 5. Guardar todos los cambios en la base de datos
+        try:
+            db.commit()
+            logger.info(f"Sincronización completada. {len(new_files)} archivos nuevos insertados")
+        except Exception as commit_error:
+            logger.error(f"Error al guardar en base de datos: {str(commit_error)}")
+            db.rollback()
+            raise
+
         return new_files
 
     except Exception as e:
         logger.error(f"Error en sync_drive_files: {str(e)}")
+        db.rollback()
         raise
