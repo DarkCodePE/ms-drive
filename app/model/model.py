@@ -38,3 +38,7 @@ class DriveFileDB(BaseModel):
     webViewLink: str
     detected_at: Optional[datetime] = None
     processed: bool = False
+
+
+class FolderCreate(BaseModel):
+    name: str

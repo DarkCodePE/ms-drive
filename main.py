@@ -6,10 +6,10 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.api.v1.endpoints import drive
 
-
 import logging
 
 from app.config.database import db_manager
+from app.repository.drive_file_repository import kafka_producer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +40,26 @@ async def startup_event():
         logger.info("Database initialization completed")
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
+        raise
+        # Inicializar el productor de Kafka
+    try:
+        await kafka_producer.start()
+        logging.info("Kafka producer started successfully.")
+    except Exception as e:
+        logging.error(f"Error initializing Kafka producer: {str(e)}")
+        raise
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop services on shutdown"""
+    logger.info("Shutting down application...")
+    try:
+        # Stop Kafka producer
+        await kafka_producer.stop()
+        logger.info("Kafka producer stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping Kafka producer: {str(e)}")
         raise
 
 

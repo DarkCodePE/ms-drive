@@ -1,10 +1,11 @@
 import logging
+from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, UploadFile, File
 from sqlalchemy.orm import Session
 from app.config.config import get_settings, get_drive_watcher
-from app.model.db_model import DriveFileModel
-from app.model.model import MonitoringStatus, DriveFile, ServiceStatus
+from app.model.db_model import DriveFileModel, DriveFolderModel
+from app.model.model import MonitoringStatus, DriveFile, ServiceStatus, FolderCreate
 from app.repository.drive_file_repository import sync_drive_files
 from app.service.driver_watcher import DriveWatcher
 from app.config.database import db_manager  # Importar la instancia de Database
@@ -187,7 +188,7 @@ async def sync_drive_files_endpoint(
         files = watcher.list_files()
         drive_files = [DriveFile(**file) for file in files]
 
-        new_files = sync_drive_files(db_session, drive_files)
+        new_files = await sync_drive_files(db_session, drive_files)
 
         return {
             "synced": len(new_files),
@@ -209,3 +210,144 @@ async def get_db_files(
     except Exception as e:
         logger.error(f"Error al obtener archivos desde la base de datos: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/folders")
+async def create_drive_folder_sync(
+        folder: FolderCreate,  # Use your FolderCreate Pydantic schema
+        watcher: DriveWatcher = Depends(get_drive_watcher),
+        db: Session = Depends(get_db)):
+    """Crea una nueva carpeta en la estructura de la aplicación, sincronizando con Google Drive."""
+    try:
+
+        # 1. Check if folder exists in Google Drive
+        existing_folder_in_drive = watcher.find_folder_by_name(folder.name)
+
+        if existing_folder_in_drive:
+            google_drive_folder_id = existing_folder_in_drive.get('id')
+            logger.info(f"Folder '{folder.name}' already exists in Google Drive (ID: {google_drive_folder_id}).")
+
+            # 2. Check if folder exists in DB with this google_drive_folder_id
+            existing_folder_in_db = db.query(DriveFolderModel).filter(
+                DriveFolderModel.google_drive_folder_id == google_drive_folder_id).first()
+
+            if existing_folder_in_db:
+                logger.info(
+                    f"Folder '{folder.name}' already exists in database (ID: {existing_folder_in_db.id}). Returning existing folder.")
+                return {
+                    "message": "Folder already exists",
+                    "folder_id": existing_folder_in_db.id,
+                    "google_drive_folder_id": existing_folder_in_db.google_drive_folder_id,
+                    "parent_folder_id": existing_folder_in_db.parent_id
+                }
+            else:
+                logger.info(f"Folder '{folder.name}' exists in Drive but not in DB. Creating DB record.")
+                # Create DB record linking to existing Drive folder
+                db_folder = DriveFolderModel(
+                    name=folder.name,
+                    parent_id=existing_folder_in_drive['parents'][0],
+                    google_drive_folder_id=google_drive_folder_id
+                )
+                db.add(db_folder)
+                db.commit()
+                db.refresh(db_folder)
+                return {
+                    "message": "Folder synced (Drive folder existed, DB record created)",
+                    "folder_id": db_folder.id,
+                    "google_drive_folder_id": db_folder.google_drive_folder_id,
+                    "parent_folder_id": db_folder.parent_id
+                }
+
+        else:
+            logger.info(f"Folder '{folder.name}' does not exist in Google Drive. Creating in Drive.")
+            # 3. Create folder in Google Drive as it doesn't exist
+            google_parent_folder_id = watcher.folder_id
+            created_folder_in_drive = watcher.create_folder(folder.name, google_parent_folder_id)
+            if created_folder_in_drive:
+                google_drive_folder_id = created_folder_in_drive.get('id')
+
+                # 4. Create folder in DB as it doesn't exist
+                db_folder = DriveFolderModel(
+                    name=folder.name,
+                    parent_id=google_parent_folder_id,  # Use requested parent ID from input
+                    google_drive_folder_id=google_drive_folder_id
+                )
+                db.add(db_folder)
+                db.commit()
+                db.refresh(db_folder)
+                return {
+                    "message": "Folder created successfully in Drive and DB",
+                    "folder_id": db_folder.id,
+                    "google_drive_folder_id": db_folder.google_drive_folder_id,
+                    "parent_folder_id": db_folder.parent_id
+                }
+            else:
+                raise HTTPException(status_code=500,
+                                    detail="Error creating folder in Google Drive")
+
+    except HTTPException as http_e:
+        db.rollback()
+        logger.error(f"HTTP Error creating folder: {str(http_e)}")
+        raise http_e  # Re-raise HTTP exception to propagate status code
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error creating folder: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating folder: {str(e)}")
+
+
+@router.get("/folders/{folder_id}/structure",
+            response_model=None)  # TODO: Define un Pydantic model para la estructura de carpeta
+async def get_folder_structure(folder_id: int, db: Session = Depends(get_db)):
+    """Obtiene la estructura de carpetas y archivos de una carpeta específica."""
+    db_folder = db.query(DriveFolderModel).get(folder_id)
+    if not db_folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    def build_structure(folder: DriveFolderModel):
+        """Función recursiva para construir la estructura JSON."""
+        folder_data = {
+            "id": folder.id,
+            "name": folder.name,
+            "google_drive_folder_id": folder.google_drive_folder_id,
+            "children": [build_structure(child) for child in folder.children],
+            "documents": [{"id": doc.id, "name": doc.name, "mime_type": doc.mime_type, "file_id": doc.file_id} for doc
+                          in folder.documents]
+        }
+        return folder_data
+
+    return build_structure(db_folder)
+
+
+@router.get("/root_structure", response_model=None)  # TODO: Define un Pydantic model para la estructura raiz
+async def get_root_structure(db: Session = Depends(get_db)):
+    """Obtiene la estructura de carpetas y archivos desde la raíz."""
+    root_folders = db.query(DriveFolderModel).filter(DriveFolderModel.parent_id == None).all()  # Obtener carpetas raíz
+    structure = []
+    for folder in root_folders:
+        structure.append(await get_folder_structure(folder.id, db))  # Reutiliza get_folder_structure para cada raíz
+    return structure
+
+
+@router.post("/folders/{folder_id}/upload_file",
+             response_model=None)  # TODO: Define un Pydantic model para respuesta de subida de archivo
+async def upload_file_to_folder(folder_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Sube un archivo a una carpeta específica (solo metadatos en la DB por ahora)."""
+    db_folder = db.query(DriveFolderModel).get(folder_id)
+    if not db_folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    # Por ahora, solo guardamos metadatos en la base de datos.
+    # La descarga desde Google Drive y el procesamiento se manejarán por el DriveFileConsumer.
+    db_document = DriveFileModel(
+        name=file.filename,
+        mime_type=file.content_type,  # file.mime_type no existe en UploadFile de FastAPI
+        folder_id=folder_id,
+        file_id="pending_upload_" + str(datetime.now().timestamp())
+        # Placeholder, se actualiza al sincronizar con Drive si es necesario
+        # ... otros campos que puedas obtener o necesitar ...
+    )
+    db.add(db_document)
+    db.commit()
+    db.refresh(db_document)
+    return {"message": "File metadata added successfully",
+            "document_id": db_document.id}  # Devuelve un JSON con mensaje e ID

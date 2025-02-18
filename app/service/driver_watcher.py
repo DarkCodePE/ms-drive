@@ -225,3 +225,64 @@ class DriveWatcher:
         except HttpError as e:
             logger.error(f"Error al obtener cambios incrementales: {str(e)}")
             raise
+
+    def create_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Crea una nueva carpeta en Google Drive.
+
+        Args:
+            folder_name: El nombre de la carpeta a crear.
+            parent_folder_id: El ID de la carpeta padre en Google Drive, si aplica.
+                                Si es None, la carpeta se crea en la raíz del Drive.
+
+        Returns:
+            Un diccionario con los metadatos de la carpeta creada, o None si falla la creación.
+        """
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        if parent_folder_id:
+            file_metadata['parents'] = [parent_folder_id]
+
+        try:
+            file = self.drive_service.files().create(body=file_metadata,
+                                                     fields='id, name, mimeType, parents').execute()
+            logger.info(f"Carpeta '{folder_name}' creada en Google Drive con ID: {file.get('id')}")
+            return file
+        except HttpError as e:
+            logger.error(f"Error al crear la carpeta '{folder_name}' en Google Drive: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error inesperado al crear la carpeta '{folder_name}' en Google Drive: {e}")
+            return None
+
+    def find_folder_by_name(self, folder_name: str) -> Optional[
+        Dict[str, Any]]:
+        """Busca una carpeta en Google Drive por nombre y carpeta padre (opcional).
+
+        Args:
+            folder_name: El nombre de la carpeta a buscar.
+            parent_folder_id: El ID de la carpeta padre en Google Drive, si aplica.
+
+        Returns:
+            Un diccionario con los metadatos de la carpeta encontrada, o None si no se encuentra.
+        """
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
+
+        try:
+            results = self.drive_service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, parents)"
+            ).execute()
+            folders = results.get('files', [])
+            if folders:
+                return folders[
+                    0]  # Retorna la primera carpeta encontrada (debería ser única por nombre en el mismo padre)
+            else:
+                return None  # No se encontró la carpeta
+        except HttpError as e:
+            logger.error(f"Error al buscar la carpeta '{folder_name}' en Google Drive: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error inesperado al buscar la carpeta '{folder_name}' en Google Drive: {e}")
+            return None

@@ -4,10 +4,14 @@ from sqlalchemy.orm import Session
 from dateutil.parser import parse as parse_date
 from datetime import datetime
 
+from app.event.producers.producer import KafkaProducer
 from app.model.db_model import DriveFileModel
 from app.model.model import DriveFile
 
 logger = logging.getLogger(__name__)
+
+# Instancia global de KafkaProducer (puedes ajustarlo según tus necesidades)
+kafka_producer = KafkaProducer()
 
 
 def safe_str(value) -> str:
@@ -22,7 +26,7 @@ def safe_str(value) -> str:
         return repr(value)
 
 
-def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFileModel]:
+async def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFileModel]:
     """
     Sincroniza una lista de archivos con la base de datos.
 
@@ -80,7 +84,8 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
                         existing.name = file_data['name']
                         existing.mime_type = file_data['mime_type']
                         existing.modified_time = modified_time
-                        existing.web_view_link = file_data['web_view_link'] if file_data['web_view_link'] != 'None' else None
+                        existing.web_view_link = file_data['web_view_link'] if file_data[
+                                                                                   'web_view_link'] != 'None' else None
                         db.add(existing)
                         logger.info(f"Archivo preparado para actualización: {file_data['name']}")
 
@@ -96,6 +101,28 @@ def sync_drive_files(db: Session, drive_files: List[DriveFile]) -> List[DriveFil
             logger.error(f"Error al guardar en base de datos: {str(commit_error)}")
             db.rollback()
             raise
+        # Preparar evento
+        event = {
+            "type": "drive-files-synced",
+            "data": {
+                "file_ids": [file.file_id for file in new_files],
+                "file_names": [file.name for file in new_files],
+                "mime_types": [file.mime_type for file in new_files],
+                "modified_times": [file.modified_time.isoformat() for file in new_files],
+                "web_view_links": [file.web_view_link for file in new_files],
+                "detected_at": datetime.utcnow().isoformat()
+            },
+            "metadata": {
+                "source": "ms-ingest",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+        # Publicar evento en Kafka
+        try:
+            await kafka_producer.send_event("drive-events", event)
+            logger.info(f"Evento enviado al tópico 'drive-events': {event}")
+        except Exception as e:
+            logger.error(f"Error al enviar evento a Kafka: {e}")
 
         return new_files
 
