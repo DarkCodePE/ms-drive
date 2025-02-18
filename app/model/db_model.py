@@ -15,11 +15,11 @@ class DriveFolderModel(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     google_drive_folder_id = Column(String, nullable=True, index=True)  # ID de la carpeta en Google Drive (si aplica)
-    parent_id = Column(String, nullable=True)
+    parent_id = Column(Integer, ForeignKey("drive_folders.id"), nullable=True)  # Referencia a la carpeta padre
     created_at = Column(DateTime, default=datetime.utcnow)
 
     children = relationship("DriveFolderModel", backref="parent",
-                            remote_side=[id])
+                            remote_side=[id])  # Relación recursiva para subcarpetas
     documents = relationship("DriveFileModel", backref="folder")  # Relación con documentos dentro de la carpeta
 
     def __repr__(self):

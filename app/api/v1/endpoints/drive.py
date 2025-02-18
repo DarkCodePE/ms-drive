@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, UploadFile, File
 from sqlalchemy.orm import Session
 from app.config.config import get_settings, get_drive_watcher
@@ -9,6 +9,7 @@ from app.model.model import MonitoringStatus, DriveFile, ServiceStatus, FolderCr
 from app.repository.drive_file_repository import sync_drive_files
 from app.service.driver_watcher import DriveWatcher
 from app.config.database import db_manager  # Importar la instancia de Database
+from dateutil.parser import parse as parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -213,86 +214,82 @@ async def get_db_files(
 
 
 @router.post("/folders")
-async def create_drive_folder_sync(
-        folder: FolderCreate,  # Use your FolderCreate Pydantic schema
+@router.post("/folders", response_model=None)  # Define a proper Pydantic response model later
+async def create_drive_folder(
+        folder: FolderCreate,
         watcher: DriveWatcher = Depends(get_drive_watcher),
         db: Session = Depends(get_db)):
     """Crea una nueva carpeta en la estructura de la aplicación, sincronizando con Google Drive."""
     try:
+        parent_folder_db = None
+        google_parent_folder_id = None
 
-        # 1. Check if folder exists in Google Drive
-        existing_folder_in_drive = watcher.find_folder_by_name(folder.name)
+        if folder.parent_folder_id:
+            parent_folder_db = db.query(DriveFolderModel).get(folder.parent_folder_id)
+            if not parent_folder_db:
+                raise HTTPException(status_code=400, detail="Parent folder not found in database")
+            google_parent_folder_id = parent_folder_db.google_drive_folder_id  # Get Google Drive ID from DB parent
 
-        if existing_folder_in_drive:
-            google_drive_folder_id = existing_folder_in_drive.get('id')
+        existing_folder_drive = watcher.find_folder_by_name(folder.name)
+
+        if existing_folder_drive:
+            google_drive_folder_id = existing_folder_drive.get('id')
             logger.info(f"Folder '{folder.name}' already exists in Google Drive (ID: {google_drive_folder_id}).")
 
-            # 2. Check if folder exists in DB with this google_drive_folder_id
-            existing_folder_in_db = db.query(DriveFolderModel).filter(
-                DriveFolderModel.google_drive_folder_id == google_drive_folder_id).first()
-
-            if existing_folder_in_db:
-                logger.info(
-                    f"Folder '{folder.name}' already exists in database (ID: {existing_folder_in_db.id}). Returning existing folder.")
-                return {
-                    "message": "Folder already exists",
-                    "folder_id": existing_folder_in_db.id,
-                    "google_drive_folder_id": existing_folder_in_db.google_drive_folder_id,
-                    "parent_folder_id": existing_folder_in_db.parent_id
-                }
+            db_folder_exists = db.query(DriveFolderModel).filter_by(
+                google_drive_folder_id=google_drive_folder_id).first()
+            if db_folder_exists:
+                logger.info(f"Folder with Google Drive ID {google_drive_folder_id} already exists in the database.")
+                return _build_folder_response(db_folder_exists, "Folder already exists in the database")  # Use helper
             else:
                 logger.info(f"Folder '{folder.name}' exists in Drive but not in DB. Creating DB record.")
-                # Create DB record linking to existing Drive folder
                 db_folder = DriveFolderModel(
                     name=folder.name,
-                    parent_id=existing_folder_in_drive['parents'][0],
+                    parent_id=folder.parent_folder_id,  # Keep parent_id as Integer ForeignKey
                     google_drive_folder_id=google_drive_folder_id
                 )
                 db.add(db_folder)
                 db.commit()
                 db.refresh(db_folder)
-                return {
-                    "message": "Folder synced (Drive folder existed, DB record created)",
-                    "folder_id": db_folder.id,
-                    "google_drive_folder_id": db_folder.google_drive_folder_id,
-                    "parent_folder_id": db_folder.parent_id
-                }
-
+                return _build_folder_response(db_folder,
+                                              "Folder synced (Drive folder existed, DB record created)")  # Use helper
         else:
             logger.info(f"Folder '{folder.name}' does not exist in Google Drive. Creating in Drive.")
-            # 3. Create folder in Google Drive as it doesn't exist
-            google_parent_folder_id = watcher.folder_id
-            created_folder_in_drive = watcher.create_folder(folder.name, google_parent_folder_id)
-            if created_folder_in_drive:
-                google_drive_folder_id = created_folder_in_drive.get('id')
+            google_parent_folder_id_to_create = google_parent_folder_id or watcher.folder_id  # Use watcher.folder_id if no parent
+            created_folder_drive = watcher.create_folder(folder.name, google_parent_folder_id_to_create)
 
-                # 4. Create folder in DB as it doesn't exist
+            if created_folder_drive:
+                google_drive_folder_id = created_folder_drive.get('id')
                 db_folder = DriveFolderModel(
                     name=folder.name,
-                    parent_id=google_parent_folder_id,  # Use requested parent ID from input
+                    parent_id=folder.parent_folder_id,  # Keep parent_id as Integer ForeignKey
                     google_drive_folder_id=google_drive_folder_id
                 )
                 db.add(db_folder)
                 db.commit()
                 db.refresh(db_folder)
-                return {
-                    "message": "Folder created successfully in Drive and DB",
-                    "folder_id": db_folder.id,
-                    "google_drive_folder_id": db_folder.google_drive_folder_id,
-                    "parent_folder_id": db_folder.parent_id
-                }
+                return _build_folder_response(db_folder, "Folder created successfully in Drive and DB")  # Use helper
             else:
-                raise HTTPException(status_code=500,
-                                    detail="Error creating folder in Google Drive")
+                raise HTTPException(status_code=500, detail="Error creating folder in Google Drive")
 
     except HTTPException as http_e:
         db.rollback()
         logger.error(f"HTTP Error creating folder: {str(http_e)}")
-        raise http_e  # Re-raise HTTP exception to propagate status code
+        raise http_e
     except Exception as e:
         db.rollback()
         logger.error(f"Unexpected error creating folder: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating folder: {str(e)}")
+
+
+def _build_folder_response(db_folder: DriveFolderModel, message: str) -> Dict[str, Any]:
+    """Helper function to build consistent folder response."""
+    return {
+        "message": message,
+        "folder_id": db_folder.id,
+        "google_drive_folder_id": db_folder.google_drive_folder_id,
+        "parent_folder_id": db_folder.parent_id
+    }
 
 
 @router.get("/folders/{folder_id}/structure",
@@ -351,3 +348,68 @@ async def upload_file_to_folder(folder_id: int, file: UploadFile = File(...), db
     db.refresh(db_document)
     return {"message": "File metadata added successfully",
             "document_id": db_document.id}  # Devuelve un JSON con mensaje e ID
+
+
+@router.post("/folders/{folder_id}/files")
+async def upload_file_to_folder(
+        folder_id: int,
+        file: UploadFile,  # Eliminar el = File(...) ya que no es necesario
+        watcher: DriveWatcher = Depends(get_drive_watcher),
+        db: Session = Depends(get_db)):
+    """Sube un archivo a Google Drive y guarda metadatos en la base de datos."""
+    try:
+        db_folder = db.query(DriveFolderModel).get(folder_id)
+        if not db_folder:
+            raise HTTPException(status_code=404, detail="Folder not found in database")
+
+        folder_google_drive_id = db_folder.google_drive_folder_id
+
+        # Leer el contenido del archivo
+        contents = await file.read()
+
+        # Asegurarnos de que el content_type existe
+        mime_type = file.content_type or 'application/octet-stream'
+
+        uploaded_file = watcher.upload_file(
+            file_name=file.filename,
+            mime_type=mime_type,
+            file_content=contents,
+            parent_folder_id=folder_google_drive_id
+        )
+
+        if uploaded_file:
+            google_drive_file_id = uploaded_file.get('id')
+
+            db_file = DriveFileModel(
+                file_id=google_drive_file_id,
+                name=file.filename,
+                mime_type=mime_type,
+                modified_time=parse_date(uploaded_file.get('modifiedTime')),
+                web_view_link=uploaded_file.get('webViewLink'),
+                folder_id=folder_id
+            )
+            db.add(db_file)
+            db.commit()
+            db.refresh(db_file)
+
+            return {
+                "message": "File uploaded and metadata saved successfully",
+                "file_id": db_file.id,
+                "google_drive_file_id": google_drive_file_id,
+                "file_name": db_file.name,
+                "web_view_link": db_file.web_view_link
+            }
+
+        raise HTTPException(status_code=500, detail="Error uploading file to Google Drive")
+
+    except HTTPException as http_e:
+        db.rollback()
+        logger.error(f"HTTP Error uploading file: {str(http_e)}")
+        raise http_e
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error uploading file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+    finally:
+        # Asegurarnos de cerrar el archivo
+        await file.close()

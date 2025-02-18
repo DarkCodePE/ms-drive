@@ -1,3 +1,4 @@
+import io
 import logging
 import uuid
 from typing import List, Dict, Any, Optional, Tuple
@@ -5,6 +6,7 @@ from datetime import datetime, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 
 logger = logging.getLogger(__name__)
 
@@ -285,4 +287,45 @@ class DriveWatcher:
             return None
         except Exception as e:
             logger.error(f"Error inesperado al buscar la carpeta '{folder_name}' en Google Drive: {e}")
+            return None
+
+    def upload_file(self, file_name: str, mime_type: str, file_content: bytes,
+                    parent_folder_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Sube un archivo a Google Drive.
+
+        Args:
+            file_name: Nombre del archivo.
+            mime_type: Tipo MIME del archivo.
+            file_content: Contenido del archivo en bytes.
+            parent_folder_id: ID de la carpeta padre en Google Drive.
+
+        Returns:
+            Dict con los metadatos del archivo subido, o None si falla.
+        """
+        try:
+            file_metadata = {
+                'name': file_name
+            }
+            if parent_folder_id:
+                file_metadata['parents'] = [parent_folder_id]
+
+            # Crear el objeto MediaIoBaseUpload desde los bytes
+            fh = io.BytesIO(file_content)
+            media = MediaIoBaseUpload(
+                fh,
+                mimetype=mime_type,
+                resumable=True
+            )
+
+            file = self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id, name, mimeType, webViewLink, modifiedTime, parents'
+            ).execute()
+
+            logger.info(f"Archivo '{file_name}' subido a Google Drive con ID: {file.get('id')}")
+            return file
+
+        except Exception as e:
+            logger.error(f"Error al subir el archivo '{file_name}' a Google Drive: {str(e)}")
             return None
