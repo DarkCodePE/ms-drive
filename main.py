@@ -9,6 +9,7 @@ from app.api.v1.endpoints import drive
 import logging
 
 from app.config.database import db_manager
+from app.event.consumer.analysis_save_consumer import AnalysisSaveConsumer
 from app.repository.drive_file_repository import kafka_producer
 
 # Configure logging
@@ -48,6 +49,24 @@ async def startup_event():
     except Exception as e:
         logging.error(f"Error initializing Kafka producer: {str(e)}")
         raise
+    # Inicializar el consumidor de Kafka
+    analytics_consumer = AnalysisSaveConsumer()
+    app.state.consumer_tasks = [asyncio.create_task(analytics_consumer.start())]
+    for task in app.state.consumer_tasks:
+        task.add_done_callback(lambda t: handle_consumer_task_result(t))
+
+
+def handle_consumer_task_result(task):
+    """
+    Maneja el resultado de las tareas de los consumidores.
+    Si una tarea termina con error, lo registra.
+    """
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass  # La tarea fue cancelada normalmente durante el apagado
+    except Exception as e:
+        logging.error(f"Consumer task failed with error: {str(e)}")
 
 
 @app.on_event("shutdown")
@@ -61,6 +80,12 @@ async def shutdown_event():
     except Exception as e:
         logger.error(f"Error stopping Kafka producer: {str(e)}")
         raise
+    # Stop Kafka consumer
+    if hasattr(app.state, 'consumer_tasks'):
+        for task in app.state.consumer_tasks:
+            task.cancel()
+        # Wait for all consumer tasks to finish
+        await asyncio.gather(*app.state.consumer_tasks, return_exceptions=True)
 
 
 @app.get("/health")

@@ -228,13 +228,14 @@ class DriveWatcher:
             logger.error(f"Error al obtener cambios incrementales: {str(e)}")
             raise
 
-    def create_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Crea una nueva carpeta en Google Drive.
+    def create_folder(self, folder_name: str, parent_folder_id: Optional[str] = None, user_email_to_share: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Crea una nueva carpeta en Google Drive y opcionalmente la comparte con un usuario.
 
         Args:
             folder_name: El nombre de la carpeta a crear.
             parent_folder_id: El ID de la carpeta padre en Google Drive, si aplica.
                                 Si es None, la carpeta se crea en la raíz del Drive.
+            user_email_to_share: Email del usuario con quien compartir la carpeta (opcional).
 
         Returns:
             Un diccionario con los metadatos de la carpeta creada, o None si falla la creación.
@@ -249,7 +250,27 @@ class DriveWatcher:
         try:
             file = self.drive_service.files().create(body=file_metadata,
                                                      fields='id, name, mimeType, parents').execute()
-            logger.info(f"Carpeta '{folder_name}' creada en Google Drive con ID: {file.get('id')}")
+            folder_id = file.get('id')
+            logger.info(f"Carpeta '{folder_name}' creada en Google Drive con ID: {folder_id}")
+
+            if user_email_to_share:
+                # Compartir la carpeta con el usuario especificado
+                permission = {
+                    'type': 'user',
+                    'role': 'writer',  # Puedes cambiar el rol a 'reader' o 'owner' según tus necesidades
+                    'emailAddress': user_email_to_share
+                }
+                try:
+                    self.drive_service.permissions().create(
+                        fileId=folder_id,
+                        body=permission,
+                        fields='id'
+                    ).execute()
+                    logger.info(f"Carpeta '{folder_name}' compartida con el usuario: {user_email_to_share}")
+                except HttpError as e_share:
+                    logger.error(f"Error al compartir la carpeta '{folder_name}' con {user_email_to_share}: {e_share}")
+                    # Decide si quieres propagar este error o simplemente registrarlo y continuar
+
             return file
         except HttpError as e:
             logger.error(f"Error al crear la carpeta '{folder_name}' en Google Drive: {e}")
@@ -257,6 +278,7 @@ class DriveWatcher:
         except Exception as e:
             logger.error(f"Error inesperado al crear la carpeta '{folder_name}' en Google Drive: {e}")
             return None
+
 
     def find_folder_by_name(self, folder_name: str) -> Optional[
         Dict[str, Any]]:

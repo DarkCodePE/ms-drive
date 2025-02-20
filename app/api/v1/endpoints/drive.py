@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.config.config import get_settings, get_drive_watcher
 from app.model.db_model import DriveFileModel, DriveFolderModel
 from app.model.model import MonitoringStatus, DriveFile, ServiceStatus, FolderCreate
+from app.model.schema import FolderStructureResponse, RootStructureResponse
 from app.repository.drive_file_repository import sync_drive_files
 from app.service.driver_watcher import DriveWatcher
 from app.config.database import db_manager  # Importar la instancia de Database
@@ -214,7 +215,6 @@ async def get_db_files(
 
 
 @router.post("/folders")
-@router.post("/folders", response_model=None)  # Define a proper Pydantic response model later
 async def create_drive_folder(
         folder: FolderCreate,
         watcher: DriveWatcher = Depends(get_drive_watcher),
@@ -256,7 +256,8 @@ async def create_drive_folder(
         else:
             logger.info(f"Folder '{folder.name}' does not exist in Google Drive. Creating in Drive.")
             google_parent_folder_id_to_create = google_parent_folder_id or watcher.folder_id  # Use watcher.folder_id if no parent
-            created_folder_drive = watcher.create_folder(folder.name, google_parent_folder_id_to_create)
+            created_folder_drive = watcher.create_folder(folder.name, google_parent_folder_id_to_create,
+                                                         "orlandokuanb@gmail.com")
 
             if created_folder_drive:
                 google_drive_folder_id = created_folder_drive.get('id')
@@ -292,8 +293,7 @@ def _build_folder_response(db_folder: DriveFolderModel, message: str) -> Dict[st
     }
 
 
-@router.get("/folders/{folder_id}/structure",
-            response_model=None)  # TODO: Define un Pydantic model para la estructura de carpeta
+@router.get("/folders/{folder_id}/structure")
 async def get_folder_structure(folder_id: int, db: Session = Depends(get_db)):
     """Obtiene la estructura de carpetas y archivos de una carpeta específica."""
     db_folder = db.query(DriveFolderModel).get(folder_id)
@@ -302,26 +302,46 @@ async def get_folder_structure(folder_id: int, db: Session = Depends(get_db)):
 
     def build_structure(folder: DriveFolderModel):
         """Función recursiva para construir la estructura JSON."""
-        folder_data = {
+        if not folder:
+            return None
+
+        return {
             "id": folder.id,
             "name": folder.name,
             "google_drive_folder_id": folder.google_drive_folder_id,
-            "children": [build_structure(child) for child in folder.children],
-            "documents": [{"id": doc.id, "name": doc.name, "mime_type": doc.mime_type, "file_id": doc.file_id} for doc
-                          in folder.documents]
+            "parent_id": folder.parent_id,
+            "children": [
+                build_structure(child)
+                for child in folder.children or []
+            ],
+            "documents": [
+                {
+                    "id": doc.id,
+                    "file_id": doc.file_id,
+                    "name": doc.name,
+                    "mime_type": doc.mime_type,
+                    "web_view_link": doc.web_view_link
+                }
+                for doc in folder.documents or []
+            ]
         }
-        return folder_data
 
     return build_structure(db_folder)
 
 
-@router.get("/root_structure", response_model=None)  # TODO: Define un Pydantic model para la estructura raiz
+@router.get("/root_structure")
 async def get_root_structure(db: Session = Depends(get_db)):
     """Obtiene la estructura de carpetas y archivos desde la raíz."""
-    root_folders = db.query(DriveFolderModel).filter(DriveFolderModel.parent_id == None).all()  # Obtener carpetas raíz
+    root_folders = db.query(DriveFolderModel).filter(
+        DriveFolderModel.parent_id == None
+    ).all()
+
     structure = []
     for folder in root_folders:
-        structure.append(await get_folder_structure(folder.id, db))  # Reutiliza get_folder_structure para cada raíz
+        folder_structure = await get_folder_structure(folder.id, db)
+        if folder_structure:
+            structure.append(folder_structure)
+
     return structure
 
 
