@@ -67,10 +67,9 @@ class AnalysisSaveConsumer:
         """
         Procesa un evento de análisis recibido de Kafka y guarda los resultados en la base de datos.
         """
-        file_id_drive = event.get('file_id')  # Obtener file_id de Google Drive del evento
-        analysis_results = event.get('analysis_results')  # Obtener resultados del análisis del evento
-        print("file_id_drive -> kafka", file_id_drive)
-        print("analysis_results -> kafka", analysis_results)
+        file_id_drive = event.get('file_id')
+        analysis_results = event.get('analysis_results')
+
         if not file_id_drive or not analysis_results:
             logger.warning(f"Evento de análisis incompleto recibido: {event}")
             return
@@ -78,80 +77,99 @@ class AnalysisSaveConsumer:
         logger.info(f"Procesando evento de análisis para file_id: {file_id_drive}")
 
         try:
-            with db_manager.get_db() as db:  # Obtener sesión de base de datos usando context manager
+            with db_manager.get_db() as db:
+                # Buscar el archivo
                 db_file = db.query(DriveFileModel).filter(DriveFileModel.file_id == file_id_drive).first()
                 if not db_file:
-                    logger.warning(
-                        f"DriveFileModel no encontrado en la base de datos para file_id: {file_id_drive}. Imposible guardar resultados del análisis.")
+                    logger.warning(f"DriveFileModel no encontrado para file_id: {file_id_drive}")
                     return
 
-                # --- Lógica para guardar los resultados del análisis en la base de datos (modelo granular) ---
-                analysis_result_db = AnalysisResultModel(
-                    file_id=db_file.id)  # Crear AnalysisResultModel, pasando file_id como argumento
-                analysis_result_db.drive_file = db_file  # Establecer la relación *después* de crear la instancia
-
-                # Guardar CriteriaEvaluationModel y EvaluationCriteriaModels
-                initial_evaluation_data = analysis_results.get("initial_evaluation")
-                criteria_evaluation_db = CriteriaEvaluationModel(
-                    analysis_result=analysis_result_db,  # Establecer relación inversa
-                    final_score=initial_evaluation_data.get("final_score"),
-                    general_recommendations_json=initial_evaluation_data.get("general_recommendations"),
-                    recommended_audiences_json=initial_evaluation_data.get("recommended_audiences"),
-                    suggested_questions_json=initial_evaluation_data.get("suggested_questions")
+                # 1. Crear el AnalysisResult primero
+                analysis_result = AnalysisResultModel(
+                    file_id=db_file.id
                 )
-                criteria_evaluation_db.clarity = EvaluationCriteriaModel(criteria_evaluation=criteria_evaluation_db,
-                                                                         **initial_evaluation_data.get(
-                                                                             "clarity"))  # Crear y relacionar EvaluationCriteriaModel para claridad
-                criteria_evaluation_db.audience = EvaluationCriteriaModel(criteria_evaluation=criteria_evaluation_db,
-                                                                          **initial_evaluation_data.get(
-                                                                              "audience"))  # Crear y relacionar EvaluationCriteriaModel para audiencia
-                criteria_evaluation_db.structure = EvaluationCriteriaModel(criteria_evaluation=criteria_evaluation_db,
-                                                                           **initial_evaluation_data.get(
-                                                                               "structure"))  # Crear y relacionar EvaluationCriteriaModel para estructura
-                criteria_evaluation_db.depth = EvaluationCriteriaModel(criteria_evaluation=criteria_evaluation_db,
-                                                                       **initial_evaluation_data.get(
-                                                                           "depth"))  # Crear y relacionar EvaluationCriteriaModel para profundidad
-                criteria_evaluation_db.questions = EvaluationCriteriaModel(criteria_evaluation=criteria_evaluation_db,
-                                                                           **initial_evaluation_data.get(
-                                                                               "questions"))  # Crear y relacionar EvaluationCriteriaModel para preguntas
-                db.add(criteria_evaluation_db)
-                analysis_result_db.initial_evaluation = criteria_evaluation_db  # Establecer relación en AnalysisResultModel
+                db.add(analysis_result)
+                db.flush()  # Para obtener el ID
 
-                # Guardar CriticalEvaluationModel
-                critical_evaluation_data = analysis_results.get("critical_evaluation")
-                critical_evaluation_db = CriticalEvaluationModel(analysis_result=analysis_result_db,
-                                                                 **critical_evaluation_data)  # Crear CriticalEvaluationModel y establecer relación
-                db.add(critical_evaluation_db)
-                analysis_result_db.critical_evaluation = critical_evaluation_db  # Establecer relación en AnalysisResultModel
-
-                # Guardar AnalysisDetailsModel y MentorReportDetailsModel
-                mentor_report_data = analysis_results.get("mentor_report")
-                mentor_details_data = mentor_report_data.get("mentor_details")
-                mentor_details_db = MentorReportDetailsModel(
-                    executive_summary=mentor_details_data.get("executive_summary"),
-                    key_findings_json=mentor_details_data.get("key_findings"),
-                    discussion_points_json=mentor_details_data.get("discussion_points"),
-                    recommended_questions_json=mentor_details_data.get("recommended_questions"),
-                    next_steps_json=mentor_details_data.get("next_steps"),
-                    alerts_json=mentor_details_data.get("alerts"),
+                # 2. Crear y relacionar CriteriaEvaluation
+                initial_evaluation_data = analysis_results.get("initial_evaluation", {})
+                criteria_evaluation = CriteriaEvaluationModel(
+                    analysis_result_id=analysis_result.id,
+                    final_score=initial_evaluation_data.get("final_score", 0.0),
+                    general_recommendations_json=initial_evaluation_data.get("general_recommendations", []),
+                    recommended_audiences_json=initial_evaluation_data.get("recommended_audiences", []),
+                    suggested_questions_json=initial_evaluation_data.get("suggested_questions", {})
                 )
-                db.add(mentor_details_db)
-                analysis_details_db = AnalysisDetailsModel(
-                    analysis_result=analysis_result_db,  # Establecer relación inversa
-                    validated_insights_json=mentor_report_data.get("validated_insights"),
-                    pending_hypotheses_json=mentor_report_data.get("pending_hypotheses"),
-                    identified_gaps_json=mentor_report_data.get("identified_gaps"),
-                    action_items_json=mentor_report_data.get("action_items"),
-                    mentor_details=mentor_details_db  # Asignar MentorReportDetailsModel
-                )
-                db.add(analysis_details_db)
-                analysis_result_db.mentor_report = analysis_details_db  # Establecer relación en AnalysisResultModel
+                db.add(criteria_evaluation)
+                db.flush()
 
-                db.add(analysis_result_db)  # Añadir AnalysisResultModel al final, después de relaciones
-                db.commit()  # Commit la transacción después de guardar todos los datos
-                logger.info(
-                    f"Resultados del análisis guardados exitosamente en la base de datos para file_id: {file_id_drive}")
+                # 3. Crear criterios individuales
+                for criteria_type in ["clarity", "audience", "structure", "depth", "questions"]:
+                    criteria_data = initial_evaluation_data.get(criteria_type, {})
+                    criteria = EvaluationCriteriaModel(
+                        score_interview=criteria_data.get("score_interview", 0),
+                        positives_json=criteria_data.get("positives", []),
+                        improvements_json=criteria_data.get("improvements", []),
+                        recommendations_json=criteria_data.get("recommendations", [])
+                    )
+
+                    # Asignar el ID del criterio al campo correspondiente en criteria_evaluation
+                    if criteria_type == "clarity":
+                        criteria.criteria_evaluation_clarity_id = criteria_evaluation.id
+                    elif criteria_type == "audience":
+                        criteria.criteria_evaluation_audience_id = criteria_evaluation.id
+                    elif criteria_type == "structure":
+                        criteria.criteria_evaluation_structure_id = criteria_evaluation.id
+                    elif criteria_type == "depth":
+                        criteria.criteria_evaluation_depth_id = criteria_evaluation.id
+                    elif criteria_type == "questions":
+                        criteria.criteria_evaluation_questions_id = criteria_evaluation.id
+
+                    db.add(criteria)
+
+                # 4. Crear CriticalEvaluation
+                critical_evaluation_data = analysis_results.get("critical_evaluation", {})
+                critical_evaluation = CriticalEvaluationModel(
+                    analysis_result_id=analysis_result.id,
+                    team_id=critical_evaluation_data.get("team_id"),
+                    specificity_of_improvements=critical_evaluation_data.get("specificity_of_improvements", False),
+                    identified_improvement_opportunities=critical_evaluation_data.get(
+                        "identified_improvement_opportunities", False),
+                    reflective_quality_scores=critical_evaluation_data.get("reflective_quality_scores", False),
+                    notes=critical_evaluation_data.get("notes", "")
+                )
+                db.add(critical_evaluation)
+                db.flush()
+
+                # 5. Crear MentorReportDetails
+                mentor_report_data = analysis_results.get("mentor_report", {})
+                mentor_details_data = mentor_report_data.get("mentor_details", {})
+                mentor_details = MentorReportDetailsModel(
+                    executive_summary=mentor_details_data.get("executive_summary", ""),
+                    key_findings_json=mentor_details_data.get("key_findings", []),
+                    discussion_points_json=mentor_details_data.get("discussion_points", []),
+                    recommended_questions_json=mentor_details_data.get("recommended_questions", []),
+                    next_steps_json=mentor_details_data.get("next_steps", []),
+                    alerts_json=mentor_details_data.get("alerts", [])
+                )
+                db.add(mentor_details)
+                db.flush()
+
+                # 6. Crear AnalysisDetails
+                analysis_details = AnalysisDetailsModel(
+                    analysis_result_id=analysis_result.id,
+                    mentor_details_id=mentor_details.id,
+                    validated_insights_json=mentor_report_data.get("validated_insights", []),
+                    pending_hypotheses_json=mentor_report_data.get("pending_hypotheses", []),
+                    identified_gaps_json=mentor_report_data.get("identified_gaps", []),
+                    action_items_json=mentor_report_data.get("action_items", [])
+                )
+                db.add(analysis_details)
+
+                # 7. Commit final
+                db.commit()
+                logger.info(f"Análisis guardado exitosamente para file_id: {file_id_drive}")
 
         except Exception as e:
-            logger.error(f"Error al procesar y guardar el evento de análisis para file_id {file_id_drive}: {str(e)}")
+            logger.error(f"Error procesando análisis para file_id {file_id_drive}: {str(e)}", exc_info=True)
             raise KafkaError(f"Error al procesar evento de análisis: {str(e)}")
