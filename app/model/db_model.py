@@ -66,115 +66,128 @@ class DriveFileModel(Base):
 
 
 class AnalysisResultModel(Base):
-    """Modelo para almacenar el resultado general del análisis, punto de entrada."""
+    """Modelo para almacenar el resultado general del análisis"""
     __tablename__ = "analysis_results"
 
     id = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("drive_files.id"), unique=True)
-    initial_evaluation_id = Column(Integer, ForeignKey("criteria_evaluations.id"))
-    critical_evaluation_id = Column(Integer, ForeignKey("critical_evaluations.id"))
-    mentor_report_id = Column(Integer, ForeignKey("analysis_details.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    initial_evaluation = relationship("CriteriaEvaluationModel", backref="analysis_result",
-                                      foreign_keys=[initial_evaluation_id], uselist=False)  # Explicit uselist=False
-    critical_evaluation = relationship("CriticalEvaluationModel", backref="analysis_result",
-                                       foreign_keys=[critical_evaluation_id], uselist=False)  # Explicit uselist=False
-    mentor_report = relationship("AnalysisDetailsModel", backref="analysis_result", foreign_keys=[mentor_report_id],
-                                 uselist=False)  # Explicit uselist=False
-
-    def __repr__(self):
-        return f"<AnalysisResultModel(id={self.id}, file_id={self.file_id})>"
+    # Relaciones one-to-one
+    initial_evaluation = relationship("CriteriaEvaluationModel", back_populates="analysis_result", uselist=False)
+    critical_evaluation = relationship("CriticalEvaluationModel", back_populates="analysis_result", uselist=False)
+    mentor_report = relationship("AnalysisDetailsModel", back_populates="analysis_result", uselist=False)
 
 
 class CriteriaEvaluationModel(Base):
-    """Modelo para la evaluación inicial completa (CriteriaEvaluationDict)"""
+    """Modelo para la evaluación inicial completa"""
     __tablename__ = "criteria_evaluations"
 
     id = Column(Integer, primary_key=True, index=True)
+    analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"), unique=True)
     final_score = Column(Float)
-    general_recommendations_json = Column(JSON)  # o Text si prefieres string
-    recommended_audiences_json = Column(JSON)  # o Text si prefieres string
-    suggested_questions_json = Column(JSON)  # o Text si prefieres string
+    general_recommendations_json = Column(JSON)
+    recommended_audiences_json = Column(JSON)
+    suggested_questions_json = Column(JSON)
 
-    clarity = relationship("EvaluationCriteriaModel",
-                           foreign_keys="EvaluationCriteriaModel.criteria_evaluation_clarity_id",
-                           uselist=False)  # Explicit uselist=False
-    audience = relationship("EvaluationCriteriaModel",
-                            foreign_keys="EvaluationCriteriaModel.criteria_evaluation_audience_id",
-                            uselist=False)  # Explicit uselist=False
-    structure = relationship("EvaluationCriteriaModel",
-                             foreign_keys="EvaluationCriteriaModel.criteria_evaluation_structure_id",
-                             uselist=False)  # Explicit uselist=False
-    depth = relationship("EvaluationCriteriaModel", foreign_keys="EvaluationCriteriaModel.criteria_evaluation_depth_id",
-                         uselist=False)  # Explicit uselist=False
-    questions = relationship("EvaluationCriteriaModel",
-                             foreign_keys="EvaluationCriteriaModel.criteria_evaluation_questions_id",
-                             uselist=False)  # Explicit uselist=Fals
-    analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"))  # Clave foránea a AnalysisResultModel
+    # Relación con AnalysisResultModel
+    analysis_result = relationship("AnalysisResultModel", back_populates="initial_evaluation")
+
+    # Relaciones con criterios individuales
+    clarity = relationship("EvaluationCriteriaModel", uselist=False,
+                           primaryjoin="and_(CriteriaEvaluationModel.id==EvaluationCriteriaModel.criteria_evaluation_id, "
+                                       "EvaluationCriteriaModel.criteria_type=='clarity')")
+    audience = relationship("EvaluationCriteriaModel", uselist=False,
+                            primaryjoin="and_(CriteriaEvaluationModel.id==EvaluationCriteriaModel.criteria_evaluation_id, "
+                                        "EvaluationCriteriaModel.criteria_type=='audience')")
+    structure = relationship("EvaluationCriteriaModel", uselist=False,
+                             primaryjoin="and_(CriteriaEvaluationModel.id==EvaluationCriteriaModel.criteria_evaluation_id, "
+                                         "EvaluationCriteriaModel.criteria_type=='structure')")
+    depth = relationship("EvaluationCriteriaModel", uselist=False,
+                         primaryjoin="and_(CriteriaEvaluationModel.id==EvaluationCriteriaModel.criteria_evaluation_id, "
+                                     "EvaluationCriteriaModel.criteria_type=='depth')")
+    questions = relationship("EvaluationCriteriaModel", uselist=False,
+                             primaryjoin="and_(CriteriaEvaluationModel.id==EvaluationCriteriaModel.criteria_evaluation_id, "
+                                         "EvaluationCriteriaModel.criteria_type=='questions')")
 
 
 class EvaluationCriteriaModel(Base):
-    """Modelo para un criterio individual de evaluación (EvaluationCriteriaDict)"""
+    """Modelo para un criterio individual de evaluación"""
     __tablename__ = "evaluation_criteria"
 
     id = Column(Integer, primary_key=True, index=True)
+    criteria_evaluation_id = Column(Integer, ForeignKey("criteria_evaluations.id"))
+    criteria_type = Column(String)  # 'clarity', 'audience', etc.
     score_interview = Column(Integer)
-    positives_json = Column(JSON)  # o Text si prefieres string
-    improvements_json = Column(JSON)  # o Text si prefieres string
-    recommendations_json = Column(JSON)  # o Text si prefieres string
-    criteria_evaluation_clarity_id = Column(Integer, ForeignKey("criteria_evaluations.id"),
-                                            nullable=True)  # Clave foránea a CriteriaEvaluationModel (para 'clarity')
-    criteria_evaluation_audience_id = Column(Integer, ForeignKey("criteria_evaluations.id"),
-                                             nullable=True)  # Clave foránea a CriteriaEvaluationModel (para 'audience')
-    criteria_evaluation_structure_id = Column(Integer, ForeignKey("criteria_evaluations.id"),
-                                              nullable=True)  # Clave foránea a CriteriaEvaluationModel (para 'structure')
-    criteria_evaluation_depth_id = Column(Integer, ForeignKey("criteria_evaluations.id"),
-                                          nullable=True)  # Clave foránea a CriteriaEvaluationModel (para 'depth')
-    criteria_evaluation_questions_id = Column(Integer, ForeignKey("criteria_evaluations.id"),
-                                              nullable=True)  # Clave foránea a CriteriaEvaluationModel (para 'questions')
+    positives_json = Column(JSON)
+    improvements_json = Column(JSON)
+    recommendations_json = Column(JSON)
+
+    criteria_evaluation = relationship("CriteriaEvaluationModel")
+
+    def to_dict(self):  # <-- AÑADIR este método to_dict()
+        return {
+            "score_interview": self.score_interview,
+            "positives": self.positives_json,
+            "improvements": self.improvements_json,
+            "recommendations": self.recommendations_json,
+        }
 
 
 class CriticalEvaluationModel(Base):
-    """Modelo para la evaluación crítica (CriticalEvaluationDict)"""
+    """Modelo para la evaluación crítica"""
     __tablename__ = "critical_evaluations"
 
     id = Column(Integer, primary_key=True, index=True)
-    team_id = Column(String)  # team_id como String
+    analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"), unique=True)
+    team_id = Column(String)
     specificity_of_improvements = Column(Boolean)
     identified_improvement_opportunities = Column(Boolean)
     reflective_quality_scores = Column(Boolean)
     notes = Column(Text)
-    analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"))  # Clave foránea a AnalysisResultModel
+
+    analysis_result = relationship("AnalysisResultModel", back_populates="critical_evaluation")
 
 
 class AnalysisDetailsModel(Base):
-    """Modelo para AnalysisDetails (MentorReportDetails + AnalysisDetails)"""
+    """Modelo para detalles del análisis"""
     __tablename__ = "analysis_details"
 
     id = Column(Integer, primary_key=True, index=True)
-    validated_insights_json = Column(JSON)  # o Text si prefieres string
-    pending_hypotheses_json = Column(JSON)  # o Text si prefieres string
-    identified_gaps_json = Column(JSON)  # o Text si prefieres string
-    action_items_json = Column(JSON)  # o Text si prefieres string
-    mentor_details_id = Column(Integer,
-                               ForeignKey("mentor_report_details.id"))  # Clave foránea a MentorReportDetailsModel
-    mentor_details = relationship("MentorReportDetailsModel", backref="analysis_details", uselist=False, foreign_keys=[mentor_details_id])  # Explicit uselist=False
-    analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"))  # Clave foránea a AnalysisResultModel
+    analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"), unique=True)
+    validated_insights_json = Column(JSON)
+    pending_hypotheses_json = Column(JSON)
+    identified_gaps_json = Column(JSON)
+    action_items_json = Column(JSON)
+
+    analysis_result = relationship("AnalysisResultModel", back_populates="mentor_report")
+    mentor_details = relationship("MentorReportDetailsModel", back_populates="analysis_details", uselist=False)
 
 
 class MentorReportDetailsModel(Base):
-    """Modelo para MentorReportDetails (parte de AnalysisDetails)"""
+    """Modelo para detalles del reporte del mentor"""
     __tablename__ = "mentor_report_details"
 
     id = Column(Integer, primary_key=True, index=True)
+    analysis_details_id = Column(Integer, ForeignKey("analysis_details.id"), unique=True)
     executive_summary = Column(Text)
-    key_findings_json = Column(JSON)  # o Text si prefieres string
-    discussion_points_json = Column(JSON)  # o Text si prefieres string
-    recommended_questions_json = Column(JSON)  # o Text si prefieres string
-    next_steps_json = Column(JSON)  # o Text si prefieres string
-    alerts_json = Column(JSON)  # o Text si prefieres string
-    analysis_details_id = Column(Integer, ForeignKey("analysis_details.id"))  # Clave foránea a AnalysisDetailsModel
+    key_findings_json = Column(JSON)
+    discussion_points_json = Column(JSON)
+    recommended_questions_json = Column(JSON)
+    next_steps_json = Column(JSON)
+    alerts_json = Column(JSON)
+
+    analysis_details = relationship("AnalysisDetailsModel", back_populates="mentor_details")
+
+    def to_dict(self):
+        return {
+            "executive_summary": self.executive_summary,
+            "key_findings": self.key_findings_json,
+            "discussion_points": self.discussion_points_json,
+            "recommended_questions": self.recommended_questions_json,
+            "next_steps": self.next_steps_json,
+            "alerts": self.alerts_json
+        }
 
 
 class DriveFile(BaseModel):

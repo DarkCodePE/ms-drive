@@ -2,9 +2,10 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, UploadFile, File
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.config.config import get_settings, get_drive_watcher
-from app.model.db_model import DriveFileModel, DriveFolderModel
+from app.model.db_model import DriveFileModel, DriveFolderModel, AnalysisResultModel, CriteriaEvaluationModel, \
+    AnalysisDetailsModel
 from app.model.model import MonitoringStatus, DriveFile, ServiceStatus, FolderCreate
 from app.model.schema import FolderStructureResponse, RootStructureResponse
 from app.repository.drive_file_repository import sync_drive_files
@@ -433,3 +434,78 @@ async def upload_file_to_folder(
     finally:
         # Asegurarnos de cerrar el archivo
         await file.close()
+
+
+@router.get("/analyze-document/{file_id}")
+async def get_analysis(file_id: str, db: Session = Depends(get_db)):
+    """Obtiene el análisis guardado para un archivo específico"""
+    try:
+        # Buscar el archivo
+        db_file = db.query(DriveFileModel).filter(DriveFileModel.file_id == file_id).first()
+        if not db_file:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Obtener el análisis con todas sus relaciones
+        analysis = db.query(AnalysisResultModel) \
+            .filter(AnalysisResultModel.file_id == db_file.id) \
+            .options(
+            joinedload(AnalysisResultModel.initial_evaluation)
+            .joinedload(CriteriaEvaluationModel.clarity),
+            joinedload(AnalysisResultModel.initial_evaluation)
+            .joinedload(CriteriaEvaluationModel.audience),
+            joinedload(AnalysisResultModel.initial_evaluation)
+            .joinedload(CriteriaEvaluationModel.structure),
+            joinedload(AnalysisResultModel.initial_evaluation)
+            .joinedload(CriteriaEvaluationModel.depth),
+            joinedload(AnalysisResultModel.initial_evaluation)
+            .joinedload(CriteriaEvaluationModel.questions),
+            joinedload(AnalysisResultModel.critical_evaluation),
+            joinedload(AnalysisResultModel.mentor_report)
+            .joinedload(AnalysisDetailsModel.mentor_details)
+        ).first()
+
+        if not analysis:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        # Convertir a diccionario con la estructura esperada por el frontend
+        return {
+            "team_id": analysis.critical_evaluation.team_id,
+            "initial_evaluation": {
+                "clarity": analysis.initial_evaluation.clarity.to_dict() if analysis.initial_evaluation.clarity else {},
+                "audience": analysis.initial_evaluation.audience.to_dict() if analysis.initial_evaluation.audience else {},
+                "structure": analysis.initial_evaluation.structure.to_dict() if analysis.initial_evaluation.structure else {},
+                "depth": analysis.initial_evaluation.depth.to_dict() if analysis.initial_evaluation.depth else {},
+                "questions": analysis.initial_evaluation.questions.to_dict() if analysis.initial_evaluation.questions else {},
+                "final_score": analysis.initial_evaluation.final_score,
+                "general_recommendations": analysis.initial_evaluation.general_recommendations_json,
+                "recommended_audiences": analysis.initial_evaluation.recommended_audiences_json,
+                "suggested_questions": analysis.initial_evaluation.suggested_questions_json
+            },
+            "critical_evaluation": {
+                "team_id": analysis.critical_evaluation.team_id,
+                "specificity_of_improvements": analysis.critical_evaluation.specificity_of_improvements,
+                "identified_improvement_opportunities": analysis.critical_evaluation.identified_improvement_opportunities,
+                "reflective_quality_scores": analysis.critical_evaluation.reflective_quality_scores,
+                "notes": analysis.critical_evaluation.notes
+            },
+            "mentor_report": {
+                "validated_insights": analysis.mentor_report.validated_insights_json,
+                "pending_hypotheses": analysis.mentor_report.pending_hypotheses_json,
+                "identified_gaps": analysis.mentor_report.identified_gaps_json,
+                "action_items": analysis.mentor_report.action_items_json,
+                "mentor_details": analysis.mentor_report.mentor_details.to_dict()
+            },
+            "metadata": {
+                "file_name": db_file.name,
+                "file_id": db_file.file_id,
+                "mime_type": db_file.mime_type,
+                "modified_time": db_file.modified_time.isoformat(),
+                "web_view_link": db_file.web_view_link
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting analysis: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
