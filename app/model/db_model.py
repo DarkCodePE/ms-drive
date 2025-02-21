@@ -76,9 +76,12 @@ class AnalysisResultModel(Base):
     mentor_report_id = Column(Integer, ForeignKey("analysis_details.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    initial_evaluation = relationship("CriteriaEvaluationModel", backref="analysis_result")  # Relación one-to-one
-    critical_evaluation = relationship("CriticalEvaluationModel", backref="analysis_result")  # Relación one-to-one
-    mentor_report = relationship("AnalysisDetailsModel", backref="analysis_result")  # Relación one-to-one
+    initial_evaluation = relationship("CriteriaEvaluationModel", backref="analysis_result",
+                                      foreign_keys=[initial_evaluation_id], uselist=False)  # Explicit uselist=False
+    critical_evaluation = relationship("CriticalEvaluationModel", backref="analysis_result",
+                                       foreign_keys=[critical_evaluation_id], uselist=False)  # Explicit uselist=False
+    mentor_report = relationship("AnalysisDetailsModel", backref="analysis_result", foreign_keys=[mentor_report_id],
+                                 uselist=False)  # Explicit uselist=False
 
     def __repr__(self):
         return f"<AnalysisResultModel(id={self.id}, file_id={self.file_id})>"
@@ -96,18 +99,18 @@ class CriteriaEvaluationModel(Base):
 
     clarity = relationship("EvaluationCriteriaModel",
                            foreign_keys="EvaluationCriteriaModel.criteria_evaluation_clarity_id",
-                           uselist=False)  # Relación one-to-one
+                           uselist=False)  # Explicit uselist=False
     audience = relationship("EvaluationCriteriaModel",
                             foreign_keys="EvaluationCriteriaModel.criteria_evaluation_audience_id",
-                            uselist=False)  # Relación one-to-one
+                            uselist=False)  # Explicit uselist=False
     structure = relationship("EvaluationCriteriaModel",
                              foreign_keys="EvaluationCriteriaModel.criteria_evaluation_structure_id",
-                             uselist=False)  # Relación one-to-one
+                             uselist=False)  # Explicit uselist=False
     depth = relationship("EvaluationCriteriaModel", foreign_keys="EvaluationCriteriaModel.criteria_evaluation_depth_id",
-                         uselist=False)  # Relación one-to-one
+                         uselist=False)  # Explicit uselist=False
     questions = relationship("EvaluationCriteriaModel",
                              foreign_keys="EvaluationCriteriaModel.criteria_evaluation_questions_id",
-                             uselist=False)  # Relación one-to-one
+                             uselist=False)  # Explicit uselist=Fals
     analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"))  # Clave foránea a AnalysisResultModel
 
 
@@ -156,8 +159,7 @@ class AnalysisDetailsModel(Base):
     action_items_json = Column(JSON)  # o Text si prefieres string
     mentor_details_id = Column(Integer,
                                ForeignKey("mentor_report_details.id"))  # Clave foránea a MentorReportDetailsModel
-    mentor_details = relationship("MentorReportDetailsModel", backref="analysis_details",
-                                  uselist=False)  # Relación one-to-one
+    mentor_details = relationship("MentorReportDetailsModel", backref="analysis_details", uselist=False, foreign_keys=[mentor_details_id])  # Explicit uselist=False
     analysis_result_id = Column(Integer, ForeignKey("analysis_results.id"))  # Clave foránea a AnalysisResultModel
 
 

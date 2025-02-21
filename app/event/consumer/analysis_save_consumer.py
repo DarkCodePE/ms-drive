@@ -87,7 +87,8 @@ class AnalysisSaveConsumer:
 
                 # --- Lógica para guardar los resultados del análisis en la base de datos (modelo granular) ---
                 analysis_result_db = AnalysisResultModel(
-                    drive_file=db_file)  # Crear AnalysisResultModel y establecer relación con DriveFileModel
+                    file_id=db_file.id)  # Crear AnalysisResultModel, pasando file_id como argumento
+                analysis_result_db.drive_file = db_file  # Establecer la relación *después* de crear la instancia
 
                 # Guardar CriteriaEvaluationModel y EvaluationCriteriaModels
                 initial_evaluation_data = analysis_results.get("initial_evaluation")
