@@ -8,12 +8,12 @@ from aiokafka import AIOKafkaProducer
 logger = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
-
+KAFKA_BOOTSTRAP_PROUDCTION_SERVERS = 'kafka-broker:9092'
 
 class KafkaProducer:
     def __init__(self):
         self._producer = AIOKafkaProducer(
-            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            bootstrap_servers=KAFKA_BOOTSTRAP_PROUDCTION_SERVERS,
             value_serializer=self._serialize_value,
             request_timeout_ms=10000
         )

@@ -43,3 +43,5 @@ class DriveFileDB(BaseModel):
 class FolderCreate(BaseModel):
     name: str
     parent_folder_id: Optional[int] = None
+    team_id: Optional[str] = None
+    folder_type: Optional[str] = "project"

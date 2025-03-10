@@ -1,11 +1,14 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 
 from openai import BaseModel
 from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Boolean, JSON, Float, Text
 from sqlalchemy.orm import relationship, backref
 
 from app.config.base import Base  # Se asume que Base está definido en tu configuración de la BD
+
+# Define FolderType como un Literal
+FolderType = Literal["team", "avances", "sesiones", "equipo", "tema", "recurso", None]
 
 
 class DriveFolderModel(Base):
@@ -17,6 +20,8 @@ class DriveFolderModel(Base):
     google_drive_folder_id = Column(String, nullable=True, index=True)
     parent_id = Column(Integer, ForeignKey("drive_folders.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    team_id = Column(String, nullable=True, index=True)
+    folder_type = Column(String)
 
     # Modificamos la relación children para manejar correctamente la recursividad
     children = relationship(

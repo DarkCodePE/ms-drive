@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
 from app.config.config import get_settings, get_drive_watcher
 from app.model.db_model import DriveFileModel, DriveFolderModel, AnalysisResultModel, CriteriaEvaluationModel, \
@@ -29,13 +29,13 @@ async def startup_event():
     """Inicializa los servicios al iniciar la aplicación."""
     settings = get_settings()
     print("Inicializando DriveWatcher...")
-    drive_watcher = get_drive_watcher(settings)
+    #drive_watcher = get_drive_watcher(settings)
     print(f"drive_notification_url: {settings.DRIVE_NOTIFICATION_URL}")
 
     if getattr(settings, "DRIVE_NOTIFICATION_URL", None):
         try:
-            channel = drive_watcher.register_watch_channel(settings.DRIVE_NOTIFICATION_URL)
-            print(f"Canal de notificaciones registrado correctamente: {channel}")
+            #channel = drive_watcher.register_watch_channel(settings.DRIVE_NOTIFICATION_URL)
+            print("Canal de notificaciones registrado correctamente")
         except Exception as e:
             print(f"Fallo al registrar el canal de notificaciones: {str(e)}")
     else:
@@ -184,11 +184,12 @@ async def get_incremental_changes(
 @router.post("/sync")
 async def sync_drive_files_endpoint(
         watcher: DriveWatcher = Depends(get_drive_watcher),
-        db_session: Session = Depends(get_db)
+        db_session: Session = Depends(get_db),
+        folder_id: Optional[str] = Form(None)  # <-- AÑADIR folder_id como Form opcional
 ) -> dict:
     """Sincroniza la lista de archivos de Google Drive con la base de datos."""
     try:
-        files = watcher.list_files()
+        files = watcher.list_files(folder_id=folder_id)  # <-- Pasar folder_id a list_files
         drive_files = [DriveFile(**file) for file in files]
 
         new_files = await sync_drive_files(db_session, drive_files)
@@ -222,6 +223,18 @@ async def create_drive_folder(
         db: Session = Depends(get_db)):
     """Crea una nueva carpeta en la estructura de la aplicación, sincronizando con Google Drive."""
     try:
+        # Validar team_id solo cuando es requerido según el tipo de carpeta
+        folder_rules = {
+            "equipo": True,
+            "tema": True,
+            "project": False,
+            "avances": False,
+            "sesiones": False
+        }
+
+        if folder_rules.get(folder.folder_type, False) and not folder.team_id:
+            raise HTTPException(status_code=400, detail="Team ID is required for this folder type")
+
         parent_folder_db = None
         google_parent_folder_id = None
 
@@ -230,6 +243,26 @@ async def create_drive_folder(
             if not parent_folder_db:
                 raise HTTPException(status_code=400, detail="Parent folder not found in database")
             google_parent_folder_id = parent_folder_db.google_drive_folder_id  # Get Google Drive ID from DB parent
+
+            # --- Validar folder_type y jerarquía (ACTUALIZADO para nuevos tipos) ---
+            folder_type = folder.folder_type or "recurso"  # Default type if not specified
+            if not folder.parent_folder_id and folder_type != "team":  # Level 1: Root folders must be "team"
+                raise HTTPException(status_code=400, detail="Root folders must be of type 'team'")
+            if folder.parent_folder_id and parent_folder_db.folder_type == "team" and folder_type not in ["avances",
+                                                                                                          "sesiones"]:  # Level 2: Under "team", only "avances" or "sesiones"
+                raise HTTPException(status_code=400,
+                                    detail="Under 'team' folders, only 'avances' or 'sesiones' folders can be created")
+            if folder.parent_folder_id and parent_folder_db.folder_type == "avances" and folder_type != "equipo":  # Level 3: Under "avances", only "equipo"
+                raise HTTPException(status_code=400,
+                                    detail="Under 'avances' folders, only 'equipo' folders can be created")
+            if folder.parent_folder_id and parent_folder_db.folder_type == "sesiones" and folder_type != "tema":  # Level 3: Under "sesiones", only "tema"
+                raise HTTPException(status_code=400,
+                                    detail="Under 'sesiones' folders, only 'tema' folders can be created")
+            if folder.folder_type in ["equipo", "tema"] and folder.parent_folder_id and db.query(
+                    DriveFileModel).filter_by(folder_id=folder.parent_folder_id).count() > 0:
+                raise HTTPException(status_code=400,
+                                    detail=f"Folders of type '{folder.folder_type}' cannot contain subfolders when "
+                                           f"documents exist in parent folder.")
 
         existing_folder_drive = watcher.find_folder_by_name(folder.name)
 
@@ -247,7 +280,9 @@ async def create_drive_folder(
                 db_folder = DriveFolderModel(
                     name=folder.name,
                     parent_id=folder.parent_folder_id,  # Keep parent_id as Integer ForeignKey
-                    google_drive_folder_id=google_drive_folder_id
+                    google_drive_folder_id=google_drive_folder_id,
+                    team_id=folder.team_id,
+                    folder_type=folder.folder_type
                 )
                 db.add(db_folder)
                 db.commit()
@@ -265,7 +300,9 @@ async def create_drive_folder(
                 db_folder = DriveFolderModel(
                     name=folder.name,
                     parent_id=folder.parent_folder_id,  # Keep parent_id as Integer ForeignKey
-                    google_drive_folder_id=google_drive_folder_id
+                    google_drive_folder_id=google_drive_folder_id,
+                    team_id=folder.team_id,
+                    folder_type=folder.folder_type
                 )
                 db.add(db_folder)
                 db.commit()
@@ -321,7 +358,8 @@ async def get_folder_structure(folder_id: int, db: Session = Depends(get_db)):
                     "file_id": doc.file_id,
                     "name": doc.name,
                     "mime_type": doc.mime_type,
-                    "web_view_link": doc.web_view_link
+                    "web_view_link": doc.web_view_link,
+                    "processed": doc.processed,
                 }
                 for doc in folder.documents or []
             ]

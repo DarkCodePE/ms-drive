@@ -14,13 +14,15 @@ from app.model.db_model import DriveFileModel, DriveFolderModel, AnalysisDetails
 from app.config.database import db_manager
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class AnalysisSaveConsumer:
     def __init__(self):
         self.consumer = aiokafka.AIOKafkaConsumer(
             'analysis-events',  # Tópico de Kafka al que se suscribe para recibir eventos de análisis
-            bootstrap_servers='localhost:9092',  # Asegúrate de que coincida con tu configuración de Kafka
+            #bootstrap_servers='localhost:9092',  # localhost:9092 para desarrollo local
+            bootstrap_servers='kafka-broker:9092',
             group_id='analysis-saver-group',  # Un group_id para este consumidor
             value_deserializer=lambda x: json.loads(x.decode('utf-8')),  # Deserializador JSON
             auto_offset_reset='earliest',
@@ -276,6 +278,10 @@ class AnalysisSaveConsumer:
                     db.commit()
                     logger.info(f"Análisis guardado exitosamente para file_id: {file_id_drive}")
 
+                    db_file.processed = True  # <-- AÑADIR ESTA LINEA: Establecer processed=True
+                    db.add(db_file)
+                    db.commit()
+                    logger.debug(f"DriveFileModel actualizado con processed=True")
                 except Exception as e:
                     db.rollback()
                     logger.error(f"Error durante la creación de entidades: {str(e)}")

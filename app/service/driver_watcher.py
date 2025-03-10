@@ -88,18 +88,34 @@ class DriveWatcher:
             logger.error(f"Error obteniendo la información de la carpeta: {str(e)}")
             raise
 
-    def list_files(self, page_size: int = 100) -> List[Dict[str, Any]]:
-        """Lista todos los archivos de la carpeta monitorizada."""
+    def list_files(self, page_size: int = 100, folder_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Lista todos los archivos de la carpeta monitorizada o de una carpeta específica.
+
+        Args:
+            page_size: El tamaño de página para la paginación de resultados de la API de Google Drive.
+            folder_id: ID de la carpeta de Google Drive para listar archivos dentro de ella.
+                       Si es None, lista los archivos de la carpeta raíz monitorizada.
+
+        Returns:
+            Una lista de diccionarios, cada uno representando un archivo.
+        """
         try:
+            query = f"trashed = false"  # Base query: exclude trashed files
+            if folder_id:
+                query += f" and '{folder_id}' in parents"  # Filter by specific folder ID
+            else:
+                query += f" and '{self.folder_id}' in parents"  # Default to root folder
+
             results = self.drive_service.files().list(
-                q=f"'{self.folder_id}' in parents and trashed = false",
+                q=query,
                 fields="files(id, name, mimeType, modifiedTime, webViewLink)",
                 orderBy="modifiedTime desc",
                 pageSize=page_size
             ).execute()
             files = results.get('files', [])
             self.last_check_time = datetime.now(timezone.utc)
-            logger.debug(f"Se encontraron {len(files)} archivos en la carpeta")
+            logger.debug(
+                f"Se encontraron {len(files)} archivos en la carpeta {folder_id if folder_id else self.folder_id}")
             return files
         except HttpError as e:
             logger.error(f"Error al listar archivos: {str(e)}")
